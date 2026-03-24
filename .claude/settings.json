@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "A Lua file was just edited. The edited file path is in tool_input.file_path. If it's a .lua file, read it and do a quick refactor pass: remove redundant code, fix any obvious issues, and ensure all external library/API calls (Commerce, HTTP, CDP, CloudRun, Invoke, etc.) have their response saved to Context with a descriptive name. Follow the rules in CLAUDE.md strictly — especially: no require, Workflow.branch() always hardcoded numbers, Context/Profile/Global patterns. Make edits directly to the file if needed. If the file is not .lua, do nothing.",
+            "statusMessage": "Revisando y refactorizando...",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
