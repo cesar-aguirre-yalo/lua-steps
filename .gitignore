@@ -1,0 +1,8 @@
+# Ignorar todo
+*
+
+# Excepciones
+!.gitignore
+!CLAUDE.md
+!.claude/
+!.claude/**
