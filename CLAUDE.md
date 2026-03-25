@@ -22,7 +22,8 @@ Scripts Lua independientes que se ejecutan como **steps (pasos) de un flujo de c
   Workflow.branch(nextNode)
   ```
 
-- **`Debug.print()`** muestra el mensaje directamente en el chat del chatbot (WhatsApp/LINE), no es solo un log interno. Usarlo intencionalmente para comunicar estado al usuario/operador.
+- **`Debug.print()`** muestra el mensaje directamente en el chat del chatbot (WhatsApp/LINE), no es solo un log interno. Solo usarlo si el usuario lo pide explícitamente.
+- **Todo el código en inglés**: variables, comentarios, keys de Context/Profile, mensajes de error.
 - Al recibir un step nuevo, **crear inmediatamente el archivo `.lua`** con nombre kebab-case descriptivo, o preguntar el nombre si no es obvio.
 
 ---
@@ -43,11 +44,17 @@ Tres namespaces con las mismas 4 operaciones cada uno:
 Variables de **sesión** — se borran cuando termina la conversación.
 
 ```lua
-Context.set('cart', cartData)
+Context.set('cart', cartData)     -- acepta tablas directamente, nunca usar JSON.encode
 Context.get('userId')
 Context.check('canBuy')
 Context.delete('canBuy')
 ```
+
+> **Importante:** Al releer un objeto guardado como tabla desde Context, usar `JSON.decode` antes de acceder a campos anidados para evitar errores de userdata:
+> ```lua
+> local customer = JSON.decode(Context.get('customer'))
+> local code = customer.data.code
+> ```
 
 ### Profile
 
@@ -66,6 +73,8 @@ Variables de **configuración a nivel proyecto** — solo lectura en general.
 
 ```lua
 Global.get('storefrontName')
+Global.get('storefrontUserUrl')     -- URL GraphQL sesión de usuario
+Global.get('storefrontAdminUrl')    -- URL GraphQL backoffice
 Global.get('VAT')
 Global.get('cdpToken')
 Global.get('accountName')
@@ -74,10 +83,10 @@ Global.get('maxUserLimit')
 Global.get('maxStoreLimit')
 ```
 
-### Variables con valor por defecto conocido
+### Variables de contexto con valor conocido
 
 - `Context.get('userId')` — número de teléfono del usuario (WhatsApp) o ID de cuenta (LINE)
-- `Context.get('userMessage')` — mensaje que mando el usuario
+- `Context.get('userMessage')` — último mensaje enviado por el usuario
 
 ---
 
@@ -94,7 +103,8 @@ HTTP.put(url, body?, headers?) -> HttpResponse
 HTTP.patch(url, body?, headers?) -> HttpResponse
 HTTP.delete(url, headers?) -> HttpResponse
 -- HttpResponse: { data, dataStr, status, statusText, headers, config }
--- NOTA: response.data es userdata. Para manipular como tabla: JSON.decode(response.dataStr)
+-- response.data es accesible directamente como tabla
+-- response.dataStr es la versión string (usar solo si se necesita JSON.decode explícito)
 ```
 
 ### `Commerce`
@@ -229,7 +239,7 @@ OptIn.setAnswer(value)   -- true = aceptó T&Cs
 
 ```lua
 Workflow.branch(nodeId)     -- ⚠️ siempre número hardcodeado
-Debug.print(value)          -- Muestra en el chat del chatbot
+Debug.print(value)          -- Muestra en el chat del chatbot — solo si el usuario lo pide
 JSON.decode(jsonString)
 JSON.encode(value)
 ```
@@ -246,90 +256,69 @@ JSON.encode(value)
 
 ### Guardar siempre las respuestas en Context
 
-Toda llamada HTTP, Commerce, CloudRun u otra función externa **debe guardarse en Context** con un nombre referencial antes de procesar. Sirve para debug en producción.
+Toda llamada HTTP, Commerce, CloudRun u otra función externa **debe guardarse en Context** antes de procesar. Sirve para debug en producción.
 
 ```lua
-local response = HTTP.post(url, body, headers)
-Context.set('myCallResponse', response)  -- siempre, antes de procesar
-local result = JSON.decode(response.dataStr)
-```
-
-### Formato de respuesta GraphQL (HTTP.post)
-
-`response.data` se puede acceder directamente como tabla. La estructura GraphQL anida bajo `.data.[nombreOperación]`:
-
-```lua
--- El path sigue la estructura: response.data.data.[queryName].[campo]
--- Para getOrders { orders { ... } }  →  response.data.data.getOrders.orders
--- Para customers { ... }             →  response.data.data.customers
 local response = HTTP.post(url, payload, headers)
 Context.set('getOrdersResponse', response)
-local orders = response.data.data.getOrders.orders
+
+if response.status == 200 then
+    -- procesar...
+end
 ```
 
-### Patrón fetch → transform → store
+### Llamadas GraphQL (HTTP.post)
+
+La URL viene siempre de `Global.get(...)`. El schema está en `.claude/graphql-admin-schema.md` y `.claude/graphql-user-schema.md` — leerlo antes de escribir una query.
+
+La respuesta sigue la estructura `response.data.data.[queryName]`:
+
+```lua
+local storefrontName = Global.get('storefrontName')
+local adminUrl = Global.get('storefrontAdminUrl')
+
+local payload = {
+    query = [[ query GetOrders(...) { getOrders(...) { orders { id status } } } ]],
+    variables = { storefrontName = storefrontName, ... }
+}
+
+local response = HTTP.post(adminUrl, payload, { ['content-type'] = 'application/json' })
+Context.set('getOrdersResponse', response)
+
+if response.status == 200 and response.data.data.getOrders then
+    local orders = response.data.data.getOrders.orders
+    Context.set('orders', orders)
+else
+    Workflow.branch(0) -- error
+end
+```
+
+> `response.data.data.[queryName]` — el primer `.data` es el HttpResponse, el segundo es el wrapper GraphQL, y `[queryName]` es el nombre de la operación definida en la query/mutación.
+
+### Inicializar Commerce
+
+```lua
+local storefrontName = Global.get('storefrontName')
+local userUrl = Global.get('storefrontUserUrl')
+local adminUrl = Global.get('storefrontAdminUrl')
+Commerce.init(storefrontName, userUrl, adminUrl)
+```
+
+### Patrón fetch → branch
 
 ```lua
 local response = Commerce.cartGet()
 Context.set('cartResponse', response)
 if response.status == "ok" then
     Context.set('cart', response.data)
+    Workflow.branch(0) -- success
 else
-    Workflow.branch(nodeIdError)
+    Workflow.branch(0) -- error
 end
-```
-
-### Validación con branch
-
-```lua
-if condicion then
-    Workflow.branch(nodeIdExito)
-else
-    Workflow.branch(nodeIdError)
-end
-```
-
-### Inicializar Commerce
-
-```lua
-local storefrontName = Global.get('storefrontName')
-local adminUrl = Global.get('storefrontAdminUrl')
-Commerce.init(storefrontName, adminUrl)
 ```
 
 ---
 
 ## Estructura de carpetas por cuenta
 
-Los scripts se organizan en subcarpetas por cuenta (cliente). Cada cuenta tiene su propia carpeta:
-
-```
-luaScripts/
-├── ccu/
-├── suntory/
-├── italcol/
-└── (otras cuentas)
-```
-
-Al crear un nuevo step, siempre hay que definir a qué cuenta pertenece. El archivo se crea dentro de la carpeta correspondiente.
-
----
-
-## Cómo pedir un nuevo script
-
-- "Nuevo step: [descripción]" → Claude pregunta la cuenta y crea el archivo en `[cuenta]/[nombre].lua`.
-- "Pasarte código" → Claude recibe el código existente como base para modificar.
-- Los archivos se nombran con kebab-case descriptivo: `cliente-validar-compra.lua`
-
----
-
-## Referencia de schema GraphQL (Storefront)
-
-Cuando implementes llamadas HTTP a los endpoints GraphQL de Storefront, leer el archivo correspondiente antes de escribir el código:
-
-- `.claude/graphql-admin-schema.md` — operaciones de backoffice (autenticadas)
-- `.claude/graphql-user-schema.md` — operaciones del flujo del chatbot (sesión de usuario)
-
-Contienen todas las queries, mutaciones, parámetros requeridos/opcionales y tipos de retorno.
-
-> La URL del endpoint siempre se toma de `Global.get(...)` en producción — los MD son solo para conocer el schema.
+Los scripts se organizan en subcarpetas por cuenta (cliente). Al crear un nuevo step, siempre hay que definir a qué cuenta pertenece. Usar el comando `/new-step`.
