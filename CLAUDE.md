@@ -77,6 +77,7 @@ Global.get('maxStoreLimit')
 ### Variables con valor por defecto conocido
 
 - `Context.get('userId')` — número de teléfono del usuario (WhatsApp) o ID de cuenta (LINE)
+- `Context.get('userMessage')` — mensaje que mando el usuario
 
 ---
 
@@ -243,10 +244,34 @@ JSON.encode(value)
 
 ## Patrones comunes
 
+### Guardar siempre las respuestas en Context
+
+Toda llamada HTTP, Commerce, CloudRun u otra función externa **debe guardarse en Context** con un nombre referencial antes de procesar. Sirve para debug en producción.
+
+```lua
+local response = HTTP.post(url, body, headers)
+Context.set('myCallResponse', response)  -- siempre, antes de procesar
+local result = JSON.decode(response.dataStr)
+```
+
+### Formato de respuesta GraphQL (HTTP.post)
+
+`response.data` se puede acceder directamente como tabla. La estructura GraphQL anida bajo `.data.[nombreOperación]`:
+
+```lua
+-- El path sigue la estructura: response.data.data.[queryName].[campo]
+-- Para getOrders { orders { ... } }  →  response.data.data.getOrders.orders
+-- Para customers { ... }             →  response.data.data.customers
+local response = HTTP.post(url, payload, headers)
+Context.set('getOrdersResponse', response)
+local orders = response.data.data.getOrders.orders
+```
+
 ### Patrón fetch → transform → store
 
 ```lua
 local response = Commerce.cartGet()
+Context.set('cartResponse', response)
 if response.status == "ok" then
     Context.set('cart', response.data)
 else
@@ -296,3 +321,15 @@ Al crear un nuevo step, siempre hay que definir a qué cuenta pertenece. El arch
 - "Pasarte código" → Claude recibe el código existente como base para modificar.
 - Los archivos se nombran con kebab-case descriptivo: `cliente-validar-compra.lua`
 
+---
+
+## Referencia de schema GraphQL (Storefront)
+
+Cuando implementes llamadas HTTP a los endpoints GraphQL de Storefront, leer el archivo correspondiente antes de escribir el código:
+
+- `.claude/graphql-admin-schema.md` — operaciones de backoffice (autenticadas)
+- `.claude/graphql-user-schema.md` — operaciones del flujo del chatbot (sesión de usuario)
+
+Contienen todas las queries, mutaciones, parámetros requeridos/opcionales y tipos de retorno.
+
+> La URL del endpoint siempre se toma de `Global.get(...)` en producción — los MD son solo para conocer el schema.
